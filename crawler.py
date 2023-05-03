@@ -41,7 +41,39 @@ def get_data(game_time, atn_name, htn_name, all_data, odds_column):
 
   return data, name
 
-def crawler(filename, odds_column, all_data):
+def excel_writer(filename, odds_column, all_data):
+  if len(all_data.keys()) == 0:
+    now = datetime.now().astimezone(utc_plus_8).strftime('%H:%M:%S')
+    print(now, 'No data for', filename)
+    return
+  
+  writer = pd.ExcelWriter(f'{filename}.xlsx')
+  for key, data in all_data.items():
+    t = dict()
+    for k, v in data.items():
+      t[k] = pd.Series(v)
+    df = pd.DataFrame.from_dict(t)
+    df = df.style.apply(color_different_red, subset=odds_column['atn']+odds_column['htn'])
+    df.to_excel(writer, sheet_name=key, index=False)
+  writer.close()
+
+def get_score(no, ID):
+  res = requests.get(f'https://blob.sportslottery.com.tw/apidata/Result/No/{no}.json')
+  game = res.json()[0] # The latest data
+  if game['id'] != ID:
+    return '-1'
+  return ':'.join(list(map(str, game['ss']['99'])))
+
+def write_score(session, all_data):
+  now = datetime.now().timestamp()
+  check = {k: v for k, v in session.items() if v['time'] < now}
+  for k, v in check.items():
+    s = get_score(v['no'], k)
+    if s != '-1':
+      all_data[v['name']]['兩隊的最終比分:客隊vs主隊'] = s
+      session.pop(k)
+  
+def crawler(filename, odds_column, all_data, session):
   requestID = '4092' if filename == 'mlb' else '4104'
   res = requests.get(f'https://blob.sportslottery.com.tw/apidata/Pre/ListByLeague/{requestID}.json')
   games = res.json()
@@ -56,6 +88,7 @@ def crawler(filename, odds_column, all_data):
       odds = odds['cs']
     
     data, name = get_data(game_time, game['atn'][0], game['htn'][0], all_data, odds_column)
+    session[game['id']] = {'no': game['no'], 'time': game['kdt']/1000.0, 'name': name}
 
     updated = False
     for i, odd in enumerate(odds):
@@ -73,20 +106,7 @@ def crawler(filename, odds_column, all_data):
       data['當有更新時的更新時間'] = data['客隊更新時間'][0]
 
     all_data[name] = deepcopy(data)
-  
-  now = datetime.now().astimezone(utc_plus_8).strftime('%H:%M:%S')
-  if len(all_data.keys()) == 0:
-    print(now, 'No data for', filename)
-  else:
-    writer = pd.ExcelWriter(f'{filename}.xlsx')
-    for key, data in all_data.items():
-      t = dict()
-      for k, v in data.items():
-        t[k] = pd.Series(v)
-      df = pd.DataFrame.from_dict(t)
-      df = df.style.apply(color_different_red, subset=odds_column['atn']+odds_column['htn'])
-      df.to_excel(writer, sheet_name=key, index=False)
-    writer.close()
+
 
 if __name__ == '__main__':
   mlb_odds_column = {
@@ -104,8 +124,17 @@ if __name__ == '__main__':
 
   mlb_data = dict()
   nba_data = dict()
+  mlb_session = dict()
+  nba_session = dict()
 
+  i = 0
   while True:
-    crawler('mlb', mlb_odds_column, mlb_data)
-    crawler('nba', nba_odds_column, nba_data)
+    crawler('mlb', mlb_odds_column, mlb_data, mlb_session)
+    crawler('nba', nba_odds_column, nba_data, nba_session)
+    if i % 60 == 0:
+      write_score(mlb_session, mlb_data)
+      write_score(nba_session, nba_data)
+    excel_writer('mlb', mlb_odds_column, mlb_data)
+    excel_writer('nba', nba_odds_column, nba_data)
     time.sleep(58)
+    i += 1
